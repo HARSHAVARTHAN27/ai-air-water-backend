@@ -49,7 +49,12 @@ def ai_risk_analysis(sensor):
             "PM2.5 level is elevated. Long exposure may lead to fatigue or mild respiratory discomfort."
         )
 
-    if mq135 > 1.2:
+ # Change line 52 from:
+# if mq135 > 1.2:
+
+# To:
+if mq135 is not None and mq135 > 1.2:
+    # do something
         risk = "WARNING"
         insights.append(
             "Toxic gas concentration detected. Ventilation is recommended."

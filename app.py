@@ -30,9 +30,9 @@ init_db()
 
 # ================= SMART AI LOGIC =================
 
-def ai_risk_analysis(sensor):
-    pm25 = sensor.get("pm25", 0)
-    mq135 = sensor.get("mq135", 0)
+def ai_risk_analysis(data):
+    mq135 = data.get("mq135")
+    ph = data.get("ph")
     ph = sensor.get("ph", 7)
 
     risk = "SAFE"
@@ -49,18 +49,14 @@ def ai_risk_analysis(sensor):
             "PM2.5 level is elevated. Long exposure may lead to fatigue or mild respiratory discomfort."
         )
 
- # Change line 52 from:
-# if mq135 > 1.2:
-
-# To:
-if mq135 is not None and mq135 > 1.2:
+   if mq135 is not None and mq135 > 1.2:
     # do something
         risk = "WARNING"
         insights.append(
             "Toxic gas concentration detected. Ventilation is recommended."
         )
 
-    if ph < 6.5 or ph > 8.5:
+    if ph is not None and (ph < 6.5 or ph > 8.5):
         risk = "WARNING"
         insights.append(
             "Water quality is outside the safe pH range. Consumption without treatment is not advised."

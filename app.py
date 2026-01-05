@@ -10,7 +10,7 @@ DB_NAME = "sensordata.db"
 
 # ================= DATABASE INITIALIZATION =================
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect("sensordata.db")
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sensor_data (

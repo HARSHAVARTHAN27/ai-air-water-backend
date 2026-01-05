@@ -33,7 +33,7 @@ init_db()
 def ai_risk_analysis(data):
     mq135 = data.get("mq135")
     ph = data.get("ph")
-    ph = sensor.get("ph", 7)
+    pm25 = data.get("pm25")
 
     risk = "SAFE"
     insights = []
@@ -49,8 +49,7 @@ def ai_risk_analysis(data):
             "PM2.5 level is elevated. Long exposure may lead to fatigue or mild respiratory discomfort."
         )
 
-   if mq135 is not None and mq135 > 1.2:
-    # do something
+    if mq135 is not None and mq135 > 1.2:
         risk = "WARNING"
         insights.append(
             "Toxic gas concentration detected. Ventilation is recommended."

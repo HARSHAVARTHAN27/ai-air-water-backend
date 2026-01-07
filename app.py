@@ -12,18 +12,11 @@ DB_NAME = "sensordata.db"
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    # Table includes all potential sensors but allows them to be NULL
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sensor_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pm25 REAL,
-            mq135 REAL,
-            ph REAL,
-            turbidity REAL,
-            heartRate REAL,
-            spo2 REAL,
-            temperature REAL,
-            humidity REAL,
+            pm25 REAL, mq135 REAL, ph REAL, turbidity REAL,
+            heartRate REAL, spo2 REAL, temperature REAL, humidity REAL,
             time TEXT
         )
     """)
@@ -32,129 +25,128 @@ def init_db():
 
 init_db()
 
-# ================= AI RISK ANALYSIS (With NoneType Protection) =================
-def ai_risk_analysis(sensor):
-    # Safety check: if the value is None from the DB, use a neutral default
-    ph = sensor.get("ph") if sensor.get("ph") is not None else 7.0
-    turb = sensor.get("turbidity") if sensor.get("turbidity") is not None else 0.0
-    temp = sensor.get("temperature") if sensor.get("temperature") is not None else 25.0
-    hum = sensor.get("humidity") if sensor.get("humidity") is not None else 50.0
+# ================= SMART AI ENGINE =================
 
-    risk = "SAFE"
+def analyze_trends(history_values):
+    """Predicts if levels are Increasing, Decreasing, or Stable."""
+    if len(history_values) < 3: return "STABLE"
+    if history_values[-1] > history_values[-2] > history_values[-3]:
+        return "INCREASING"
+    if values[-1] < values[-2] < values[-3]:
+        return "DECREASING"
+    return "STABLE"
+
+def detect_anomaly(current, history):
+    """Detects a sudden 50% spike compared to the moving average."""
+    if len(history) < 3 or current is None: return False
+    avg = sum(history) / len(history)
+    return current > (avg * 1.5)
+
+def get_ai_guidance(risk_level, insights):
+    """Generates actionable safety protocols based on calculated risk."""
+    guidance = {
+        "DANGER": "EVACUATE AREA. Use industrial-grade masks and strictly avoid water source.",
+        "WARNING": "CAUTION. Increase ventilation and boil/filter water before use.",
+        "SAFE": "Normal conditions. No special action required."
+    }
+    return guidance.get(risk_level, "Monitor system closely.")
+
+def ai_risk_engine(sensor, history_pm, history_turb):
+    # Safe Extraction
+    pm25 = sensor.get("pm25", 0) or 0.0
+    mq135 = sensor.get("mq135", 0) or 0.0
+    ph = sensor.get("ph", 7.0) or 7.0
+    turb = sensor.get("turbidity", 0) or 0.0
+    temp = sensor.get("temperature", 25) or 25.0
+
+    risk_score = 0
     insights = []
 
-    # Water Quality AI Logic
+    # --- Air AI Analysis ---
+    if pm25 > 150: 
+        risk_score += 2
+        insights.append("Hazardous Air: PM2.5 levels pose immediate health risk.")
+    elif pm25 > 80: 
+        risk_score += 1
+        insights.append("Air Quality: Poor. Sensitive groups should stay indoors.")
+
+    # --- Water AI Analysis ---
     if ph < 6.5 or ph > 8.5:
-        risk = "WARNING"
-        insights.append(f"Water pH ({ph}) is outside safe drinking limits.")
+        risk_score += 1
+        insights.append(f"Water pH ({ph}) is corrosive/alkaline. Do not drink.")
     
     if turb > 1000:
-        risk = "DANGER"
-        insights.append("High turbidity detected! The water is very cloudy.")
-    elif turb > 400:
-        if risk != "DANGER": risk = "WARNING"
-        insights.append("Moderate turbidity. Filtration recommended.")
-
-    # Temp & Humidity Logic
-    if temp > 45:
-        risk = "WARNING"
-        insights.append(f"High Temperature ({temp}°C) may affect water oxygen levels.")
+        risk_score += 2
+        insights.append("Severe Water Turbidity: High bacterial contamination risk.")
     
-    if hum > 90:
-        insights.append("Extremely high humidity detected.")
+    # --- Determine Global Risk ---
+    risk_level = "SAFE"
+    if risk_score >= 3: risk_level = "DANGER"
+    elif risk_score >= 1: risk_level = "WARNING"
 
-    return risk, insights
+    return {
+        "risk_level": risk_level,
+        "insights": insights,
+        "trends": {
+            "air_trend": analyze_trends(history_pm),
+            "water_trend": analyze_trends(history_turb)
+        },
+        "anomalies": {
+            "air_spike": detect_anomaly(pm25, history_pm),
+            "water_spike": detect_anomaly(turb, history_turb)
+        },
+        "action_plan": get_ai_guidance(risk_level, insights)
+    }
 
 # ================= API ROUTES =================
 
-@app.route("/")
-def home():
-    return "Water Monitoring AI Backend is Online"
-
-# ---------- ESP32 UPLOAD ROUTE ----------
 @app.route("/api/upload", methods=["POST"])
 def upload_data():
     try:
         data = request.json
-        if not data:
-            return jsonify({"error": "No JSON payload received"}), 400
-
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        
-        # Insert data using .get() to avoid KeyErrors if a sensor is missing
         cursor.execute("""
-            INSERT INTO sensor_data (ph, turbidity, temperature, humidity, time)
-            VALUES (?, ?, ?, ?, ?)
-        """, (
-            data.get("ph"),
-            data.get("turbidity"),
-            data.get("temperature"),
-            data.get("humidity"),
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ))
+            INSERT INTO sensor_data (pm25, mq135, ph, turbidity, temperature, humidity, time)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (data.get("pm25"), data.get("mq135"), data.get("ph"), 
+              data.get("turbidity"), data.get("temperature"), data.get("humidity"),
+              datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
         conn.close()
-        
-        print(f"Successfully stored: {data}")
-        return jsonify({"status": "Success", "data_received": data}), 200
-
+        return jsonify({"status": "Success"}), 200
     except Exception as e:
-        print(f"Upload Error: {e}")
         return jsonify({"status": "Error", "message": str(e)}), 500
 
-# ---------- DASHBOARD LATEST DATA ----------
 @app.route("/api/latest", methods=["GET"])
 def get_latest():
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        # Fetch the most recent row
-        cursor.execute("SELECT ph, turbidity, temperature, humidity, time FROM sensor_data ORDER BY id DESC LIMIT 1")
-        row = cursor.fetchone()
-        conn.close()
-
-        if not row:
-            return jsonify({"message": "Database is currently empty"}), 200
-
-        # Map DB row to dictionary for AI processing
-        s_data = {
-            "ph": row[0],
-            "turbidity": row[1],
-            "temperature": row[2],
-            "humidity": row[3]
-        }
-        
-        risk, insights = ai_risk_analysis(s_data)
-        
-        return jsonify({
-            "sensor_data": s_data,
-            "timestamp": row[4],
-            "ai_analysis": {
-                "risk_level": risk,
-                "insights": insights
-            }
-        })
-
-    except Exception as e:
-        print(f"Latest Route Error: {e}")
-        return jsonify({"error": str(e)}), 500
-
-# ---------- DATA HISTORY (For Graphs) ----------
-@app.route("/api/history", methods=["GET"])
-def get_history():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT ph, turbidity, time FROM sensor_data ORDER BY id DESC LIMIT 20")
-    rows = cursor.fetchall()
+    
+    # Get Current Data
+    cursor.execute("SELECT pm25, mq135, ph, turbidity, temperature, humidity, time FROM sensor_data ORDER BY id DESC LIMIT 1")
+    row = cursor.fetchone()
+
+    # Get Historical Data for AI Analysis (Last 5 records)
+    cursor.execute("SELECT pm25, turbidity FROM sensor_data ORDER BY id DESC LIMIT 5")
+    history = cursor.fetchall()
     conn.close()
 
-    return jsonify([
-        {"ph": r[0], "turbidity": r[1], "time": r[2]}
-        for r in rows[::-1] # Reverse to show oldest to newest on graph
-    ])
+    if not row: return jsonify({"message": "No data"})
 
-# ================= RUN SERVER =================
+    s_data = {"pm25": row[0], "mq135": row[1], "ph": row[2], "turbidity": row[3], "temperature": row[4]}
+    
+    # Process through AI Engine
+    pm_history = [r[0] for r in history if r[0] is not None][::-1]
+    turb_history = [r[1] for r in history if r[1] is not None][::-1]
+    
+    ai_report = ai_risk_engine(s_data, pm_history, turb_history)
+
+    return jsonify({
+        "sensor_data": s_data,
+        "timestamp": row[6],
+        "ai_analysis": ai_report
+    })
+
 if __name__ == "__main__":
-    # Port 5000 for local; Render will override this automatically
     app.run(host="0.0.0.0", port=5000)

@@ -15,8 +15,12 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sensor_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            pm25 REAL, mq135 REAL, ph REAL, turbidity REAL,
-            heartRate REAL, spo2 REAL, temperature REAL, humidity REAL,
+            pm25 REAL,
+            mq135 REAL,
+            ph REAL,
+            turbidity REAL,
+            temperature REAL,
+            humidity REAL,
             time TEXT
         )
     """)
@@ -25,128 +29,127 @@ def init_db():
 
 init_db()
 
-# ================= AI LOGIC HELPERS =================
-
-def analyze_trend(values):
-    """Checks if the last 3 readings are increasing or decreasing."""
-    if len(values) < 3: return "STABLE"
-    if values[-1] > values[-2] > values[-3]: return "INCREASING"
-    if values[-1] < values[-2] < values[-3]: return "DECREASING"
-    return "STABLE"
-
-def detect_anomaly(current, history):
-    """Detects a sudden 50% spike compared to recent average."""
-    if len(history) < 3 or current is None: return False
-    avg = sum(history) / len(history)
-    return current > (avg * 1.5)
-
-# ================= MAIN AI RISK ENGINE =================
-
-def ai_risk_engine(sensor, history_pm, history_turb):
-    # Safe data extraction with defaults
-    pm25 = sensor.get("pm25") if sensor.get("pm25") is not None else 0.0
-    turb = sensor.get("turbidity") if sensor.get("turbidity") is not None else 0.0
-    ph = sensor.get("ph") if sensor.get("ph") is not None else 7.0
-    temp = sensor.get("temperature") if sensor.get("temperature") is not None else 25.0
-
-    risk_level = "SAFE"
+# ================= AI RISK ANALYSIS =================
+def ai_risk_analysis(data):
+    risk = "SAFE"
     insights = []
-    
-    # 1. Air Risk
-    if pm25 > 150:
-        risk_level = "DANGER"
-        insights.append("CRITICAL: Hazardous PM2.5 levels. Evacuate or use N95 masks.")
-    elif pm25 > 80:
-        risk_level = "WARNING"
-        insights.append("Warning: Air quality is poor. Limit outdoor activity.")
 
-    # 2. Water Risk
+    # Water Logic (Using .get with defaults for safety)
+    ph = data.get("ph", 7.0)
+    turb = data.get("turbidity", 0.0)
     if ph < 6.5 or ph > 8.5:
-        if risk_level != "DANGER": risk_level = "WARNING"
-        insights.append(f"Water pH ({ph}) is outside safe limits (6.5-8.5).")
-    
+        risk = "WARNING"
+        insights.append(f"Abnormal pH level: {ph}")
     if turb > 1000:
-        risk_level = "DANGER"
-        insights.append("Water is highly turbid. High risk of contamination.")
-    
-    # 3. Trends & Anomalies
-    air_trend = analyze_trend(history_pm)
-    water_trend = analyze_trend(history_turb)
-    
-    return {
-        "overall_risk": risk_level,
-        "insights": insights,
-        "analysis": {
-            "air_trend": air_trend,
-            "water_trend": water_trend,
-            "air_anomaly": detect_anomaly(pm25, history_pm),
-            "water_anomaly": detect_anomaly(turb, history_turb)
-        },
-        "guidance": "Boil water and use air purifiers." if risk_level != "SAFE" else "Conditions are optimal."
-    }
+        risk = "DANGER"
+        insights.append("High water turbidity detected.")
+
+    # Air Logic
+    pm = data.get("pm25", 0.0)
+    if pm > 150:
+        risk = "DANGER"
+        insights.append("Hazardous Air Quality (PM2.5)")
+    elif pm > 80:
+        if risk != "DANGER": risk = "WARNING"
+        insights.append("Poor Air Quality.")
+
+    return risk, insights
 
 # ================= API ROUTES =================
 
 @app.route("/")
 def home():
-    return jsonify({"message": "AI Air & Water Backend is Live", "status": "Ready"})
+    return "AI Sensor Backend - Status: Online (Holding Values Enabled)"
 
+# ---------- UPLOAD ROUTE (ESP32 Calls This) ----------
 @app.route("/api/upload", methods=["POST"])
 def upload_data():
     try:
         data = request.json
+        if not data:
+            return jsonify({"error": "No data received"}), 400
+            
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO sensor_data (pm25, mq135, ph, turbidity, temperature, humidity, time)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (data.get("pm25"), data.get("mq135"), data.get("ph"), 
-              data.get("turbidity"), data.get("temperature"), data.get("humidity"),
-              datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        """, (
+            data.get("pm25"), data.get("mq135"), 
+            data.get("ph"), data.get("turbidity"),
+            data.get("temperature"), data.get("humidity"),
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ))
         conn.commit()
         conn.close()
-        return jsonify({"status": "Success"}), 200
+        return jsonify({"status": "Data Recorded"}), 200
     except Exception as e:
-        return jsonify({"status": "Error", "message": str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
+# ---------- LATEST ROUTE (Dashboard Calls This) ----------
 @app.route("/api/latest", methods=["GET"])
 def get_latest():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    # Get Current
-    cursor.execute("SELECT pm25, mq135, ph, turbidity, temperature, humidity, time FROM sensor_data ORDER BY id DESC LIMIT 1")
-    row = cursor.fetchone()
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
 
-    # Get Last 5 for AI History
-    cursor.execute("SELECT pm25, turbidity FROM sensor_data ORDER BY id DESC LIMIT 5")
-    hist_rows = cursor.fetchall()
-    conn.close()
+        # FETCH LAST WATER DATA (Holds value if current packet only has air)
+        cursor.execute("""
+            SELECT ph, turbidity, temperature, humidity, time 
+            FROM sensor_data 
+            WHERE ph IS NOT NULL 
+            ORDER BY id DESC LIMIT 1
+        """)
+        w_row = cursor.fetchone()
 
-    if not row: return jsonify({"message": "No data yet"})
+        # FETCH LAST AIR DATA (Holds value if current packet only has water)
+        cursor.execute("""
+            SELECT pm25, mq135 
+            FROM sensor_data 
+            WHERE pm25 IS NOT NULL 
+            ORDER BY id DESC LIMIT 1
+        """)
+        a_row = cursor.fetchone()
+        
+        conn.close()
 
-    # Prepare data for AI
-    current_sensor = {"pm25": row[0], "mq135": row[1], "ph": row[2], "turbidity": row[3], "temperature": row[4], "humidity": row[5]}
-    pm_history = [r[0] for r in hist_rows if r[0] is not None][::-1]
-    turb_history = [r[1] for r in hist_rows if r[1] is not None][::-1]
+        # Build combined data (Memory logic)
+        combined_data = {
+            "ph": w_row[0] if w_row else 7.0,
+            "turbidity": w_row[1] if w_row else 0.0,
+            "temperature": w_row[2] if w_row else 25.0,
+            "humidity": w_row[3] if w_row else 50.0,
+            "pm25": a_row[0] if a_row else 0.0,
+            "mq135": a_row[1] if a_row else 0.0,
+            "timestamp": w_row[4] if w_row else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
 
-    # Run AI Risk Engine
-    ai_results = ai_risk_engine(current_sensor, pm_history, turb_history)
+        # Run AI analysis on the merged "held" data
+        risk, insights = ai_risk_analysis(combined_data)
 
-    return jsonify({
-        "timestamp": row[6],
-        "sensor_data": current_sensor,
-        "ai_report": ai_results
-    })
+        return jsonify({
+            "sensor_data": combined_data,
+            "ai_report": {
+                "risk_level": risk,
+                "insights": insights
+            },
+            "status": "values_held"
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
+# ---------- HISTORY ROUTE (For Charts) ----------
 @app.route("/api/history", methods=["GET"])
 def get_history():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT pm25, ph, turbidity, time FROM sensor_data ORDER BY id DESC LIMIT 10")
-    rows = cursor.fetchall()
-    conn.close()
-    return jsonify([{"pm25": r[0], "ph": r[1], "turb": r[2], "time": r[3]} for r in rows[::-1]])
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT ph, turbidity, pm25, time FROM sensor_data ORDER BY id DESC LIMIT 20")
+        rows = cursor.fetchall()
+        conn.close()
+        return jsonify([{"ph": r[0], "turb": r[1], "pm25": r[2], "time": r[3]} for r in rows[::-1]])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

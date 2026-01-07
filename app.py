@@ -1,12 +1,13 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 CORS(app)
 DB_NAME = "sensordata.db"
 
+# ================= DATABASE INITIALIZATION =================
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -25,19 +26,26 @@ init_db()
 # ================= ENHANCED AI FEATURE LOGIC =================
 
 def detect_anomaly(current, history):
-    """Detects if the current value is 50% higher than the recent average."""
     if len(history) < 3 or not current: return False
     avg = sum(history) / len(history)
     return current > (avg * 1.5)
 
 def predict_trend(history):
-    """Determines if levels are INCREASING, DECREASING, or STABLE."""
     if len(history) < 3: return "STABLE"
     if history[-1] > history[-2] > history[-3]: return "INCREASING (Worsening)"
     if history[-1] < history[-2] < history[-3]: return "DECREASING (Improving)"
     return "STABLE"
 
-def get_detailed_ai_logic(risk, data):
+def get_detailed_ai_logic(risk, data, is_online):
+    # If the system is offline, override advice to show connection error
+    if not is_online:
+        return {
+            "health_advisory": "STALE DATA: System is offline. Do not rely on these readings.",
+            "food_safety": "System Connection Lost.",
+            "worker_monitoring": "SYSTEM ERROR: Check ESP32 Power/WiFi.",
+            "exit_guidance": "Check Network Status."
+        }
+    
     if risk == "DANGER":
         return {
             "health_advisory": "CRITICAL: High respiratory risk. Drink 3L+ water. Eat Vitamin C rich foods.",
@@ -75,17 +83,20 @@ def calculate_risk(data):
 
 @app.route("/api/upload", methods=["POST"])
 def upload_data():
-    data = request.json
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO sensor_data (pm25, mq135, ph, turbidity, temperature, humidity, time)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (data.get("pm25"), data.get("mq135"), data.get("ph"), data.get("turbidity"), 
-          data.get("temperature"), data.get("humidity"), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
-    conn.close()
-    return jsonify({"status": "success"}), 200
+    try:
+        data = request.json
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO sensor_data (pm25, mq135, ph, turbidity, temperature, humidity, time)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (data.get("pm25"), data.get("mq135"), data.get("ph"), data.get("turbidity"), 
+              data.get("temperature"), data.get("humidity"), datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "success"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/latest", methods=["GET"])
 def get_latest():
@@ -99,9 +110,16 @@ def get_latest():
     a_hist = cursor.fetchall()
     conn.close()
 
-    if not w_hist or not a_hist: return jsonify({"status": "Waiting for data..."})
+    if not w_hist or not a_hist: return jsonify({"status": "OFFLINE", "message": "No data in database"})
 
-    # Prepare historical arrays for AI Prediction
+    # Check for Heartbeat (Connection Status)
+    last_time_str = w_hist[0][4]
+    last_time_obj = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
+    time_diff = (datetime.now() - last_time_obj).total_seconds()
+    
+    # If data is older than 60 seconds, consider it DISCONNECTED
+    is_online = time_diff < 60 
+
     ph_history = [row[0] for row in w_hist][::-1]
     pm_history = [row[0] for row in a_hist][::-1]
 
@@ -113,16 +131,20 @@ def get_latest():
     }
 
     risk_level, insights = calculate_risk(combined)
-    advisory = get_detailed_ai_logic(risk_level, combined)
+    # If offline, force risk to "UNKNOWN/DISCONNECTED"
+    final_risk = risk_level if is_online else "DISCONNECTED"
+    
+    advisory = get_detailed_ai_logic(final_risk, combined, is_online)
 
     return jsonify({
+        "system_status": "ONLINE" if is_online else "OFFLINE",
         "sensor_data": combined,
-        "ai_risk_assessment": risk_level,
-        "insights": insights,
+        "ai_risk_assessment": final_risk,
+        "insights": insights if is_online else ["Check Device Connection"],
         "predictions": {
-            "air_trend": predict_trend(pm_history),
-            "water_trend": predict_trend(ph_history),
-            "anomaly_detected": detect_anomaly(combined["pm25"], pm_history)
+            "air_trend": predict_trend(pm_history) if is_online else "N/A",
+            "water_trend": predict_trend(ph_history) if is_online else "N/A",
+            "anomaly_detected": detect_anomaly(combined["pm25"], pm_history) if is_online else False
         },
         "daily_advisory": {
             "health_food": advisory["health_advisory"],
